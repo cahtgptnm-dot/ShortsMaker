@@ -6,9 +6,14 @@ const $ = (selector) => document.querySelector(selector);
 
 const videoInput = $("#video");
 const startButton = $("#start");
-console.log("ShortsMaker main.js is running");
 const statusBox = $("#status");
 const outputLink = $("#output");
+
+if (!videoInput || !startButton || !statusBox || !outputLink) {
+  throw new Error(
+    "ShortsMaker setup error: check #video, #start, #status and #output in index.html."
+  );
+}
 
 let ffmpeg = null;
 let loadPromise = null;
@@ -16,15 +21,8 @@ let selectedFile = null;
 let outputURL = null;
 let isProcessing = false;
 
-if (!videoInput || !startButton || !statusBox || !outputLink) {
-  throw new Error(
-    "ShortsMaker setup error: check the video, start, status and output IDs in index.html."
-  );
-}
-
-// Create advanced controls without requiring changes to index.html.
+// Build the advanced controls.
 const controls = document.createElement("section");
-controls.id = "advanced-controls";
 controls.style.cssText = `
   display:grid;
   grid-template-columns:repeat(2,minmax(0,1fr));
@@ -33,30 +31,31 @@ controls.style.cssText = `
 `;
 
 controls.innerHTML = `
-  <label style="display:block;font-size:13px">
+  <label style="display:block;font-size:14px">
     Clip duration
     <select id="clip-duration" style="
       display:block;width:100%;margin-top:7px;padding:12px;
-      border-radius:10px;border:1px solid #46536d;
-      background:#101829;color:#fff">
+      border-radius:10px;background:#101829;color:white">
       <option value="30">30 seconds</option>
       <option value="45">45 seconds</option>
       <option value="60" selected>60 seconds</option>
     </select>
   </label>
-  <label style="display:block;font-size:13px">
+  <label style="display:block;font-size:14px">
     Video framing
     <select id="framing" style="
       display:block;width:100%;margin-top:7px;padding:12px;
-      border-radius:10px;border:1px solid #46536d;
-      background:#101829;color:#fff">
-      <option value="crop" selected>Fill screen</option>
+      border-radius:10px;background:#101829;color:white">
+      <option value="crop">Fill screen (crop sides)</option>
       <option value="fit">Show entire video</option>
     </select>
   </label>
 `;
 
 startButton.parentNode.insertBefore(controls, startButton);
+
+const durationSelect = $("#clip-duration");
+const framingSelect = $("#framing");
 
 const progress = document.createElement("progress");
 progress.max = 100;
@@ -85,15 +84,17 @@ function setBusy(busy) {
   isProcessing = busy;
   startButton.disabled = busy;
   videoInput.disabled = busy;
-  $("#clip-duration").disabled = busy;
-  $("#framing").disabled = busy;
-  startButton.textContent = busy
-    ? "Processing…"
-    : "▶ Create Short";
+  durationSelect.disabled = busy;
+  framingSelect.disabled = busy;
+  startButton.textContent = busy ? "Processing…" : "▶ Create Short";
 }
 
-videoInput.addEventListener("change", () => {
-  selectedFile = videoInput.files?.[0] || null;
+// Detect video selection.
+videoInput.onchange = function () {
+  selectedFile = this.files && this.files[0]
+    ? this.files[0]
+    : null;
+
   clearDownload();
   progress.value = 0;
 
@@ -109,24 +110,23 @@ videoInput.addEventListener("change", () => {
   }
 
   showStatus(
-    `Selected: ${selectedFile.name} · ${(
-      selectedFile.size / (1024 * 1024)
-    ).toFixed(1)} MB`
+    `Selected: ${selectedFile.name} ` +
+    `(${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB)`
   );
-});
+};
 
+// Load FFmpeg once.
 async function loadEngine() {
   if (ffmpeg) return ffmpeg;
   if (loadPromise) return loadPromise;
 
   loadPromise = (async () => {
-    showStatus("Loading video engine for the first time…");
+    showStatus("Loading video engine…");
 
     const engine = new FFmpeg();
 
     engine.on("log", ({ message }) => {
-      // Keep diagnostic output in the browser console.
-      console.debug("[ShortsMaker FFmpeg]", message);
+      console.debug("[ShortsMaker]", message);
     });
 
     engine.on("progress", ({ progress: amount }) => {
@@ -135,6 +135,7 @@ async function loadEngine() {
           0,
           Math.min(99, Math.round(amount * 100))
         );
+
         progress.value = percent;
         showStatus(`Processing video… ${percent}%`);
       }
@@ -165,7 +166,8 @@ async function loadEngine() {
   }
 }
 
-startButton.addEventListener("click", async () => {
+// Create the vertical MP4.
+startButton.onclick = async function () {
   if (isProcessing) return;
 
   if (!selectedFile) {
@@ -177,39 +179,29 @@ startButton.addEventListener("click", async () => {
   progress.value = 0;
   setBusy(true);
 
-  let engine;
+  let inputName = "input-video";
+  const outputName = "shortsmaker-output.mp4";
 
   try {
-    engine = await loadEngine();
+    const engine = await loadEngine();
 
     showStatus("Preparing your video…");
 
-    // Use the original extension so FFmpeg can identify the input format.
-    const extension =
-      selectedFile.name.match(/\.([a-zA-Z0-9]{1,8})$/)?.[1] ||
-      "mp4";
+    try {
+      await engine.deleteFile(inputName);
+    } catch {}
 
-    const inputName = `input.${extension.toLowerCase()}`;
-    const outputName = "shortsmaker-output.mp4";
-
-    // Remove files left by an earlier attempt.
-    for (const name of [inputName, outputName]) {
-      try {
-        await engine.deleteFile(name);
-      } catch {
-        // The file may not exist yet.
-      }
-    }
+    try {
+      await engine.deleteFile(outputName);
+    } catch {}
 
     await engine.writeFile(inputName, await fetchFile(selectedFile));
 
-    const duration = $("#clip-duration").value;
-    const framing = $("#framing").value;
+    const duration = durationSelect.value;
 
-    const videoFilter =
-      framing === "fit"
-        ? "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black"
-        : "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280";
+    const videoFilter = framingSelect.value === "fit"
+      ? "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black"
+      : "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280";
 
     showStatus("Creating your vertical MP4…");
 
@@ -234,8 +226,6 @@ startButton.addEventListener("click", async () => {
       throw new Error(`FFmpeg exited with code ${exitCode}.`);
     }
 
-    showStatus("Preparing download…");
-
     const data = await engine.readFile(outputName);
 
     outputURL = URL.createObjectURL(
@@ -250,14 +240,13 @@ startButton.addEventListener("click", async () => {
     progress.value = 100;
     showStatus("Finished! Your vertical video is ready.");
 
-    // Clean up the virtual filesystem.
-    for (const name of [inputName, outputName]) {
-      try {
-        await engine.deleteFile(name);
-      } catch {
-        // Ignore cleanup errors.
-      }
-    }
+    try {
+      await engine.deleteFile(inputName);
+    } catch {}
+
+    try {
+      await engine.deleteFile(outputName);
+    } catch {}
   } catch (error) {
     console.error("[ShortsMaker]", error);
     progress.value = 0;
@@ -269,7 +258,8 @@ startButton.addEventListener("click", async () => {
   } finally {
     setBusy(false);
   }
-});
+};
 
 showStatus("Ready. Choose a video to begin.");
 progress.value = 0;
+startButton.textContent = "▶ Create Short";
