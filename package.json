@@ -1,1 +1,19 @@
 
+{
+  "name": "shortsmaker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@ffmpeg/ffmpeg": "0.12.10",
+    "@ffmpeg/util": "0.12.2",
+    "@ffmpeg/core": "0.12.6"
+  },
+  "devDependencies": {
+    "vite": "5.4.14"
+  }
+}
+
