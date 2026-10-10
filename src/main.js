@@ -28,19 +28,25 @@ startButton.addEventListener("click", async () => {
     status.textContent = "Loading video engine…";
 
     const ffmpeg = new FFmpeg();
-    const base = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
-
-    ffmpeg.on("log", ({ message }) => {
-      status.textContent = message;
-    });
+    const base = `${import.meta.env.BASE_URL}ffmpeg/`;
 
     await ffmpeg.load({
-      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, "text/javascript"),
-      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
+      coreURL: await toBlobURL(
+        `${base}ffmpeg-core.js`,
+        "text/javascript"
+      ),
+      wasmURL: await toBlobURL(
+        `${base}ffmpeg-core.wasm`,
+        "application/wasm"
+      )
     });
 
-    status.textContent = "Preparing video…";
-    await ffmpeg.writeFile("input.mp4", await fetchFile(selectedFile));
+    status.textContent = "Processing video…";
+
+    await ffmpeg.writeFile(
+      "input.mp4",
+      await fetchFile(selectedFile)
+    );
 
     await ffmpeg.exec([
       "-i", "input.mp4",
@@ -70,4 +76,3 @@ startButton.addEventListener("click", async () => {
     startButton.disabled = false;
   }
 });
-
