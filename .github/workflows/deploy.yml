@@ -1,9 +1,9 @@
-
-name: Build and deploy ShortsMaker
+name: Deploy ClipMaker Studio
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -12,43 +12,42 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: github-pages
   cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Get repository files
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+          cache: npm
 
       - name: Install dependencies
         run: npm install
 
-      - name: Copy FFmpeg engine
-        run: |
-          mkdir -p public/ffmpeg
-          cp node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.* public/ffmpeg/
-
-      - name: Build app
+      - name: Build Vite project
         run: npm run build
 
-      - name: Upload site
+      - name: Upload website
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
   deploy:
-    needs: build
-    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+
+    runs-on: ubuntu-latest
+    needs: build
+
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
