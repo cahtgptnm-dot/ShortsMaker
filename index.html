@@ -161,7 +161,7 @@ loadButton.addEventListener("click", async () => {
     message("Engine ready. Select a video, then create your clip.");
   } catch (error) {
     console.error(error);
-    message("Engine failed to load. Check your internet connection and try again.");
+    message("Engine failed: " + (error?.message || String(error)));
     loadButton.disabled = false;
   } finally {
     busy = false;
