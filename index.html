@@ -146,12 +146,20 @@ loadButton.addEventListener("click", async () => {
     const base =
       "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd";
 
-    await ffmpeg.load({
-      coreURL: await toBlobURL(
-        base + "/ffmpeg-core.js", "text/javascript"
-      ),
-      wasmURL: await toBlobURL(
-        base + "/ffmpeg-core.wasm", "application/wasm"
+await ffmpeg.load({
+  classWorkerURL: await toBlobURL(
+    "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js",
+    "text/javascript"
+  ),
+  coreURL: await toBlobURL(
+    "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.js",
+    "text/javascript"
+  ),
+  wasmURL: await toBlobURL(
+    "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.wasm",
+    "application/wasm"
+  )
+});
       )
     });
 
