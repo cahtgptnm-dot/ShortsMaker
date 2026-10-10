@@ -1,9 +1,5 @@
-
-import { defineConfig } from "vite";
+import { defineConfig } from 'vite';
 
 export default defineConfig({
-  base: "/ShortsMaker/",
-  build: {
-    target: "es2020"
-  }
+  base: '/ClipMaker-Studio/',
 });
