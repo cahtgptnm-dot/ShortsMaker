@@ -1,385 +1,1023 @@
 
 const videoInput = document.getElementById("videoFile");
 const video = document.getElementById("video");
-const status = document.getElementById("status");
-const startInput = document.getElementById("startTime");
-const durationInput = document.getElementById("duration");
-const qualityInput = document.getElementById("quality");
-const exportBtn = document.getElementById("exportBtn");
-const stopBtn = document.getElementById("stopBtn");
-const progress = document.getElementById("progress");
-const exportStatus = document.getElementById("exportStatus");
-const downloadArea = document.getElementById("downloadArea");
+const const $ = (id) => document.getElementById(id);
 
-let currentURL = null;
-let cancelExport = false;
-let exporting = false;
+const youtubeUrl = $("youtubeUrl");
+const previewYoutube = $("previewYoutube");
+const youtubeArea = $("youtubeArea");
+const youtubeFrame = $("youtubeFrame");
+
+const videoFile = $("videoFile");
+const localArea = $("localArea");
+const sourceVideo = $("sourceVideo");
+
+const startTime = $("startTime");
+const clipDuration = $("clipDuration");
+const outputSize = $("outputSize");
+const fitMode = $("fitMode");
+
+const makeClip = $("makeClip");
+const stopClip = $("stopClip");
+const progress = $("progress");
+const status = $("status");
+const downloadArea = $("downloadArea");
+const canvas = $("renderCanvas");
+const ctx = canvas.getContext("2d");
+
+let localVideoUrl = null;
 let recorder = null;
 let animationId = null;
+let exportRunning = false;
+let stopRequested = false;
+let recordingChunks = [];
+let exportStartedAt = 0;
+let exportDuration = 0;
+let audioStream = null;
+let canvasStream = null;
+let exportFinished = false;
 
 function setStatus(message) {
   status.textContent = message;
 }
 
-function setExportStatus(message) {
-  exportStatus.textContent = message;
+function getYouTubeId(rawUrl) {
+  try {
+    const url = new URL(rawUrl.trim());
+    const host = url.hostname.replace(/^www\./, "").toLowerCase();
+
+    if (host === "youtu.be") {
+      return url.pathname.split("/").filter(Boolean)[0] || null;
+    }
+
+    if (
+      host === "youtube.com" ||
+      host === "m.youtube.com" ||
+      host === "music.youtube.com" ||
+      host === "youtube-nocookie.com"
+    ) {
+      if (url.pathname === "/watch") {
+        return url.searchParams.get("v");
+      }
+
+      const parts = url.pathname.split("/").filter(Boolean);
+
+      if (
+        ["shorts", "embed", "live"].includes(parts[0]) &&
+        parts[1]
+      ) {
+        return parts[1];
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
 }
 
-function waitForEvent(element, eventName) {
+function validYouTubeId(id) {
+  return typeof id === "string" && /^[a-zA-Z0-9_-]{11}$/.test(id);
+}
+
+previewYoutube.addEventListener("click", () => {
+  const id = getYouTubeId(youtubeUrl.value);
+
+  if (!id || !validYouTubeId(id)) {
+    setStatus("Please enter a valid YouTube video URL.");
+    return;
+  }
+
+  youtubeFrame.src =
+    "https://www.youtube-nocookie.com/embed/" +
+    encodeURIComponent(id);
+
+  youtubeArea.classList.remove("hidden");
+  setStatus(
+    "YouTube preview loaded. Select an authorized local video file to create a clip."
+  );
+});
+
+youtubeUrl.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    previewYoutube.click();
+  }
+});
+
+videoFile.addEventListener("change", () => {
+  const file = videoFile.files && videoFile.files[0];
+
+  if (!file) {
+    return;
+  }
+
+  if (!file.type.startsWith("video/")) {
+    setStatus("Please select a supported video file.");
+    videoFile.value = "";
+    return;
+  }
+
+  if (exportRunning) {
+    setStatus("Wait for the current export to finish first.");
+    return;
+  }
+
+  if (localVideoUrl) {
+    URL.revokeObjectURL(localVideoUrl);
+  }
+
+  localVideoUrl = URL.createObjectURL(file);
+  sourceVideo.src = localVideoUrl;
+  sourceVideo.load();
+
+  localArea.classList.remove("hidden");
+  downloadArea.replaceChildren();
+  progress.value = 0;
+
+  setStatus("Video selected: " + file.name + ". Loading video details...");
+});
+
+sourceVideo.addEventListener("loadedmetadata", () => {
+  if (Number.isFinite(sourceVideo.duration)) {
+    setStatus(
+      "Video ready. Duration: " +
+      sourceVideo.duration.toFixed(1) +
+      " seconds."
+    );
+  }
+});
+
+sourceVideo.addEventListener("error", () => {
+  setStatus(
+    "This video could not be opened by your browser. Try MP4 with H.264 video."
+  );
+});
+
+function seekTo(seconds) {
   return new Promise((resolve, reject) => {
-    const onEvent = () => {
+    if (Math.abs(sourceVideo.currentTime - seconds) < 0.05) {
+      resolve();
+      return;
+    }
+
+    const onSeeked = () => {
       cleanup();
       resolve();
     };
 
     const onError = () => {
       cleanup();
-      reject(new Error("The video could not be loaded or decoded."));
+      reject(new Error("Could not seek to the requested start time."));
     };
 
     const cleanup = () => {
-      element.removeEventListener(eventName, onEvent);
-      element.removeEventListener("error", onError);
+      sourceVideo.removeEventListener("seeked", onSeeked);
+      sourceVideo.removeEventListener("error", onError);
     };
 
-    element.addEventListener(eventName, onEvent, { once: true });
-    element.addEventListener("error", onError, { once: true });
+    sourceVideo.addEventListener("seeked", onSeeked, { once: true });
+    sourceVideo.addEventListener("error", onError, { once: true });
+
+    sourceVideo.currentTime = seconds;
   });
 }
 
-videoInput.addEventListener("change", async () => {
-  const file = videoInput.files?.[0];
-
-  if (!file) {
-    setStatus("No video selected.");
+function drawFrame() {
+  if (!exportRunning) {
     return;
   }
 
-  if (!file.type.startsWith("video/")) {
-    setStatus("Please select a valid video file.");
-    return;
-  }
+  const videoWidth = sourceVideo.videoWidth;
+  const videoHeight = sourceVideo.videoHeight;
 
-  if (currentURL) {
-    URL.revokeObjectURL(currentURL);
-  }
+  if (videoWidth > 0 && videoHeight > 0) {
+    const canvasWidth = canvas.width;
+    const canvasHeight = canvas.height;
 
-  currentURL = URL.createObjectURL(file);
-  video.pause();
-  video.removeAttribute("src");
-  video.load();
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-  setStatus(`Selected: ${file.name}. Loading preview...`);
-  exportBtn.disabled = true;
-  downloadArea.replaceChildren();
-  progress.value = 0;
+    if (fitMode.value === "crop") {
+      const scale = Math.max(
+        canvasWidth / videoWidth,
+        canvasHeight / videoHeight
+      );
 
-  try {
-    const loaded = waitForEvent(video, "loadedmetadata");
-    video.src = currentURL;
-    video.load();
-    await loaded;
+      const drawWidth = videoWidth * scale;
+      const drawHeight = videoHeight * scale;
+      const x = (canvasWidth - drawWidth) / 2;
+      const y = (canvasHeight - drawHeight) / 2;
 
-    if (!Number.isFinite(video.duration) || video.duration <= 0) {
-      throw new Error("The video duration could not be detected.");
+      ctx.drawImage(
+        sourceVideo,
+        x,
+        y,
+        drawWidth,
+        drawHeight
+      );
+    } else {
+      const scale = Math.min(
+        canvasWidth / videoWidth,
+        canvasHeight / videoHeight
+      );
+
+      const drawWidth = videoWidth * scale;
+      const drawHeight = videoHeight * scale;
+      const x = (canvasWidth - drawWidth) / 2;
+      const y = (canvasHeight - drawHeight) / 2;
+
+      ctx.drawImage(
+        sourceVideo,
+        x,
+        y,
+        drawWidth,
+        drawHeight
+      );
     }
-
-    startInput.max = Math.max(0, video.duration - 0.1);
-    startInput.value = "0";
-
-    setStatus(
-      `Video ready: ${file.name} | Duration: ${video.duration.toFixed(1)} seconds`
-    );
-    exportBtn.disabled = false;
-    setExportStatus("Your video is ready to edit.");
-  } catch (error) {
-    setStatus(`Error: ${error.message}`);
-    exportBtn.disabled = true;
-  }
-});
-
-function waitForSeek() {
-  if (video.seeking) {
-    return waitForEvent(video, "seeked");
   }
 
-  return Promise.resolve();
+  const elapsed = Math.max(
+    0,
+    sourceVideo.currentTime - exportStartedAt
+  );
+
+  progress.value = Math.min(
+    100,
+    (elapsed / exportDuration) * 100
+  );
+
+  animationId = requestAnimationFrame(drawFrame);
 }
 
-function getRecorderType() {
+function getSupportedMimeType() {
+  if (!window.MediaRecorder) {
+    return "";
+  }
+
   const types = [
     "video/webm;codecs=vp9,opus",
     "video/webm;codecs=vp8,opus",
     "video/webm"
   ];
 
-  return types.find(type => MediaRecorder.isTypeSupported(type)) || "";
+  return types.find((type) =>
+    MediaRecorder.isTypeSupported(type)
+  ) || "";
 }
 
-function drawVerticalFrame(ctx, canvas) {
-  const sourceWidth = video.videoWidth;
-  const sourceHeight = video.videoHeight;
+function releaseStreams() {
+  if (canvasStream) {
+    canvasStream.getTracks().forEach((track) => track.stop());
+    canvasStream = null;
+  }
 
-  if (!sourceWidth || !sourceHeight) return;
+  if (audioStream) {
+    audioStream.getTracks().forEach((track) => track.stop());
+    audioStream = null;
+  }
+}
 
-  // Fill a 9:16 canvas without stretching the source video.
-  const scale = Math.max(
-    canvas.width / sourceWidth,
-    canvas.height / sourceHeight
+function finishExport() {
+  exportRunning = false;
+  stopClip.disabled = true;
+  makeClip.disabled = false;
+
+  if (animationId !== null) {
+    cancelAnimationFrame(animationId);
+    animationId = null;
+  }
+
+  sourceVideo.pause();
+  releaseStreams();
+}
+
+makeClip.addEventListener("click", async () => {
+  if (exportRunning) {
+    return;
+  }
+
+  if (!videoFile.files || !videoFile.files[0] || !sourceVideo.src) {
+    setStatus("Choose a video file to begin.");
+    return;
+  }
+
+  if (!sourceVideo.videoWidth || !Number.isFinite(sourceVideo.duration)) {
+    setStatus("Wait until the selected video has finished loading.");
+    return;
+  }
+
+  if (!window.MediaRecorder || !canvas.captureStream) {
+    setStatus(
+      "Your browser does not support video export. Try a recent desktop Chrome or Edge browser."
+    );
+    return;
+  }
+
+  const start = Number(startTime.value);
+  const requestedDuration = Number(clipDuration.value);
+  const quality = Number(outputSize.value);
+
+  if (!Number.isFinite(start) || start < 0) {
+    setStatus("Enter a valid start time of zero seconds or more.");
+    return;
+  }
+
+  if (start >= sourceVideo.duration) {
+    setStatus("The start time must be before the end of the video.");
+    return;
+  }
+
+  if (!Number.isFinite(requestedDuration) || requestedDuration <= 0) {
+    setStatus("Choose a valid clip duration.");
+    return;
+  }
+
+  exportDuration = Math.min(
+    requestedDuration,
+    sourceVideo.duration - start
   );
 
-  const width = sourceWidth * scale;
-  const height = sourceHeight * scale;
-  const x = (canvas.width - width) / 2;
-  const y = (canvas.height - height) / 2;
+  if (exportDuration <= 0) {
+    setStatus("There is no video remaining at this start time.");
+    return;
+  }
 
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(video, x, y, width, height);
+  canvas.width = quality;
+  canvas.height = Math.round(quality * 16 / 9);
+
+  downloadArea.replaceChildren();
+  progress.value = 0;
+  recordingChunks = [];
+  stopRequested = false;
+  exportFinished = false;
+
+  makeClip.disabled = true;
+  stopClip.disabled = false;
+  exportRunning = true;
+
+  setStatus("Preparing your vertical clip...");
+
+  try {
+    await seekTo(start);
+
+    sourceVideo.muted = false;
+
+    const captureVideo =
+      sourceVideo.captureStream ||
+      sourceVideo.mozCaptureStream;
+
+    if (typeof captureVideo === "function") {
+      audioStream = captureVideo.call(sourceVideo);
+    }
+
+    canvasStream = canvas.captureStream(30);
+
+    const tracks = [...canvasStream.getVideoTracks()];
+
+    if (audioStream) {
+      audioStream.getAudioTracks().forEach((track) => {
+        tracks.push(track);
+      });
+    }
+
+    const combinedStream = new MediaStream(tracks);
+    const mimeType = getSupportedMimeType();
+
+    if (!mimeType) {
+      throw new Error(
+        "This browser cannot record WebM video. Try a recent desktop Chrome or Edge browser."
+      );
+    }
+
+    recorder = new MediaRecorder(combinedStream, {
+      mimeType
+    });
+
+    recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        recordingChunks.push(event.data);
+      }
+    };
+
+    recorder.onerror = () => {
+      setStatus("An error occurred while recording the clip.");
+      if (recorder && recorder.state !== "inactive") {
+        recorder.stop();
+      }
+    };
+
+    recorder.onstop = () => {
+      finishExport();
+
+      if (recordingChunks.length === 0) {
+        setStatus("No video data was recorded. Please try again.");
+        return;
+      }
+
+      const blob = new Blob(recordingChunks, {
+        type: mimeType
+      });
+
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      link.href = url;
+      link.download = "clipmaker-vertical-clip.webm";
+      link.textContent = "⬇ Download your vertical clip";
+      link.style.display = "inline-block";
+      link.style.marginTop = "16px";
+      link.style.fontWeight = "bold";
+
+      downloadArea.replaceChildren(link);
+
+      setStatus(
+        stopRequested
+          ? "Export stopped. Download the recorded portion below."
+          : "Clip created! Use the download link below."
+      );
+
+      progress.value = stopRequested
+        ? progress.value
+        : 100;
+
+      exportFinished = true;
+    };
+
+    exportStartedAt = start;
+    drawFrame();
+
+    recorder.start(250);
+
+    await sourceVideo.play();
+
+    setStatus(
+      "Creating clip... Keep this page open until recording finishes."
+    );
+
+    const endTime = start + exportDuration;
+
+    const checkPlayback = () => {
+      if (!exportRunning || !recorder) {
+        return;
+      }
+
+      if (
+        sourceVideo.currentTime >= endTime ||
+        sourceVideo.ended
+      ) {
+        sourceVideo.pause();
+
+        if (recorder.state !== "inactive") {
+          recorder.stop();
+        }
+      } else {
+        requestAnimationFrame(checkPlayback);
+      }
+    };
+
+    checkPlayback();
+  } catch (error) {
+    console.error(error);
+
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+    } else {
+      finishExport();
+    }
+
+    setStatus(
+      "Export failed: " +
+      (error && error.message
+        ? error.message
+        : "Unknown error. Try a different video or browser.")
+    );
+  }
+});
+
+stopClip.addEventListener("click", () => {
+  if (!exportRunning) {
+    return;
+  }
+
+  stopRequested = true;
+  setStatus("Stopping export...");
+
+  if (recorder && recorder.state !== "inactive") {
+    recorder.stop();
+  } else {
+    finishExport(const $ = (id) => document.getElementById(id);
+
+const youtubeUrl = $("youtubeUrl");
+const previewYoutube = $("previewYoutube");
+const youtubeArea = $("youtubeArea");
+const youtubeFrame = $("youtubeFrame");
+
+const videoFile = $("videoFile");
+const localArea = $("localArea");
+const sourceVideo = $("sourceVideo");
+
+const startTime = $("startTime");
+const clipDuration = $("clipDuration");
+const outputSize = $("outputSize");
+const fitMode = $("fitMode");
+
+const makeClip = $("makeClip");
+const stopClip = $("stopClip");
+const progress = $("progress");
+const status = $("status");
+const downloadArea = $("downloadArea");
+const canvas = $("renderCanvas");
+const ctx = canvas.getContext("2d");
+
+let localVideoUrl = null;
+let recorder = null;
+let animationId = null;
+let exportRunning = false;
+let stopRequested = false;
+let recordingChunks = [];
+let exportStartedAt = 0;
+let exportDuration = 0;
+let audioStream = null;
+let canvasStream = null;
+let exportFinished = false;
+
+function setStatus(message) {
+  status.textContent = message;
 }
 
-function waitUntilPlaying() {
-  if (!video.paused) return Promise.resolve();
+function getYouTubeId(rawUrl) {
+  try {
+    const url = new URL(rawUrl.trim());
+    const host = url.hostname.replace(/^www\./, "").toLowerCase();
 
+    if (host === "youtu.be") {
+      return url.pathname.split("/").filter(Boolean)[0] || null;
+    }
+
+    if (
+      host === "youtube.com" ||
+      host === "m.youtube.com" ||
+      host === "music.youtube.com" ||
+      host === "youtube-nocookie.com"
+    ) {
+      if (url.pathname === "/watch") {
+        return url.searchParams.get("v");
+      }
+
+      const parts = url.pathname.split("/").filter(Boolean);
+
+      if (
+        ["shorts", "embed", "live"].includes(parts[0]) &&
+        parts[1]
+      ) {
+        return parts[1];
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function validYouTubeId(id) {
+  return typeof id === "string" && /^[a-zA-Z0-9_-]{11}$/.test(id);
+}
+
+previewYoutube.addEventListener("click", () => {
+  const id = getYouTubeId(youtubeUrl.value);
+
+  if (!id || !validYouTubeId(id)) {
+    setStatus("Please enter a valid YouTube video URL.");
+    return;
+  }
+
+  youtubeFrame.src =
+    "https://www.youtube-nocookie.com/embed/" +
+    encodeURIComponent(id);
+
+  youtubeArea.classList.remove("hidden");
+  setStatus(
+    "YouTube preview loaded. Select an authorized local video file to create a clip."
+  );
+});
+
+youtubeUrl.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    previewYoutube.click();
+  }
+});
+
+videoFile.addEventListener("change", () => {
+  const file = videoFile.files && videoFile.files[0];
+
+  if (!file) {
+    return;
+  }
+
+  if (!file.type.startsWith("video/")) {
+    setStatus("Please select a supported video file.");
+    videoFile.value = "";
+    return;
+  }
+
+  if (exportRunning) {
+    setStatus("Wait for the current export to finish first.");
+    return;
+  }
+
+  if (localVideoUrl) {
+    URL.revokeObjectURL(localVideoUrl);
+  }
+
+  localVideoUrl = URL.createObjectURL(file);
+  sourceVideo.src = localVideoUrl;
+  sourceVideo.load();
+
+  localArea.classList.remove("hidden");
+  downloadArea.replaceChildren();
+  progress.value = 0;
+
+  setStatus("Video selected: " + file.name + ". Loading video details...");
+});
+
+sourceVideo.addEventListener("loadedmetadata", () => {
+  if (Number.isFinite(sourceVideo.duration)) {
+    setStatus(
+      "Video ready. Duration: " +
+      sourceVideo.duration.toFixed(1) +
+      " seconds."
+    );
+  }
+});
+
+sourceVideo.addEventListener("error", () => {
+  setStatus(
+    "This video could not be opened by your browser. Try MP4 with H.264 video."
+  );
+});
+
+function seekTo(seconds) {
   return new Promise((resolve, reject) => {
-    const onPlaying = () => {
+    if (Math.abs(sourceVideo.currentTime - seconds) < 0.05) {
+      resolve();
+      return;
+    }
+
+    const onSeeked = () => {
       cleanup();
       resolve();
     };
 
     const onError = () => {
       cleanup();
-      reject(new Error("The video could not start playing."));
+      reject(new Error("Could not seek to the requested start time."));
     };
 
     const cleanup = () => {
-      video.removeEventListener("playing", onPlaying);
-      video.removeEventListener("error", onError);
+      sourceVideo.removeEventListener("seeked", onSeeked);
+      sourceVideo.removeEventListener("error", onError);
     };
 
-    video.addEventListener("playing", onPlaying, { once: true });
-    video.addEventListener("error", onError, { once: true });
+    sourceVideo.addEventListener("seeked", onSeeked, { once: true });
+    sourceVideo.addEventListener("error", onError, { once: true });
+
+    sourceVideo.currentTime = seconds;
   });
 }
 
-function stopTracks(stream) {
-  if (stream) {
-    stream.getTracks().forEach(track => track.stop());
+function drawFrame() {
+  if (!exportRunning) {
+    return;
+  }
+
+  const videoWidth = sourceVideo.videoWidth;
+  const videoHeight = sourceVideo.videoHeight;
+
+  if (videoWidth > 0 && videoHeight > 0) {
+    const canvasWidth = canvas.width;
+    const canvasHeight = canvas.height;
+
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+    if (fitMode.value === "crop") {
+      const scale = Math.max(
+        canvasWidth / videoWidth,
+        canvasHeight / videoHeight
+      );
+
+      const drawWidth = videoWidth * scale;
+      const drawHeight = videoHeight * scale;
+      const x = (canvasWidth - drawWidth) / 2;
+      const y = (canvasHeight - drawHeight) / 2;
+
+      ctx.drawImage(
+        sourceVideo,
+        x,
+        y,
+        drawWidth,
+        drawHeight
+      );
+    } else {
+      const scale = Math.min(
+        canvasWidth / videoWidth,
+        canvasHeight / videoHeight
+      );
+
+      const drawWidth = videoWidth * scale;
+      const drawHeight = videoHeight * scale;
+      const x = (canvasWidth - drawWidth) / 2;
+      const y = (canvasHeight - drawHeight) / 2;
+
+      ctx.drawImage(
+        sourceVideo,
+        x,
+        y,
+        drawWidth,
+        drawHeight
+      );
+    }
+  }
+
+  const elapsed = Math.max(
+    0,
+    sourceVideo.currentTime - exportStartedAt
+  );
+
+  progress.value = Math.min(
+    100,
+    (elapsed / exportDuration) * 100
+  );
+
+  animationId = requestAnimationFrame(drawFrame);
+}
+
+function getSupportedMimeType() {
+  if (!window.MediaRecorder) {
+    return "";
+  }
+
+  const types = [
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm"
+  ];
+
+  return types.find((type) =>
+    MediaRecorder.isTypeSupported(type)
+  ) || "";
+}
+
+function releaseStreams() {
+  if (canvasStream) {
+    canvasStream.getTracks().forEach((track) => track.stop());
+    canvasStream = null;
+  }
+
+  if (audioStream) {
+    audioStream.getTracks().forEach((track) => track.stop());
+    audioStream = null;
   }
 }
 
-async function createClip() {
-  if (exporting) return;
+function finishExport() {
+  exportRunning = false;
+  stopClip.disabled = true;
+  makeClip.disabled = false;
 
-  if (!video.src || !Number.isFinite(video.duration)) {
-    setExportStatus("Choose a video first.");
+  if (animationId !== null) {
+    cancelAnimationFrame(animationId);
+    animationId = null;
+  }
+
+  sourceVideo.pause();
+  releaseStreams();
+}
+
+makeClip.addEventListener("click", async () => {
+  if (exportRunning) {
     return;
   }
 
-  if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) {
-    setExportStatus(
-      "Your browser does not support video export. Try the latest Chrome browser."
+  if (!videoFile.files || !videoFile.files[0] || !sourceVideo.src) {
+    setStatus("Choose a video file to begin.");
+    return;
+  }
+
+  if (!sourceVideo.videoWidth || !Number.isFinite(sourceVideo.duration)) {
+    setStatus("Wait until the selected video has finished loading.");
+    return;
+  }
+
+  if (!window.MediaRecorder || !canvas.captureStream) {
+    setStatus(
+      "Your browser does not support video export. Try a recent desktop Chrome or Edge browser."
     );
     return;
   }
 
-  const start = Number(startInput.value);
-  const duration = Number(durationInput.value);
-  const resolution = Number(qualityInput.value);
+  const start = Number(startTime.value);
+  const requestedDuration = Number(clipDuration.value);
+  const quality = Number(outputSize.value);
 
-  if (
-    !Number.isFinite(start) ||
-    start < 0 ||
-    !Number.isFinite(duration) ||
-    ![30, 45, 60].includes(duration) ||
-    start + duration > video.duration
-  ) {
-    setExportStatus(
-      `Invalid selection. Choose a start time between 0 and ${Math.max(
-        0,
-        video.duration - duration
-      ).toFixed(1)} seconds. The full clip must fit inside your video.`
-    );
+  if (!Number.isFinite(start) || start < 0) {
+    setStatus("Enter a valid start time of zero seconds or more.");
     return;
   }
 
-  exporting = true;
-  cancelExport = false;
-  exportBtn.disabled = true;
-  stopBtn.disabled = false;
-  video.pause();
+  if (start >= sourceVideo.duration) {
+    setStatus("The start time must be before the end of the video.");
+    return;
+  }
+
+  if (!Number.isFinite(requestedDuration) || requestedDuration <= 0) {
+    setStatus("Choose a valid clip duration.");
+    return;
+  }
+
+  exportDuration = Math.min(
+    requestedDuration,
+    sourceVideo.duration - start
+  );
+
+  if (exportDuration <= 0) {
+    setStatus("There is no video remaining at this start time.");
+    return;
+  }
+
+  canvas.width = quality;
+  canvas.height = Math.round(quality * 16 / 9);
+
   downloadArea.replaceChildren();
   progress.value = 0;
+  recordingChunks = [];
+  stopRequested = false;
+  exportFinished = false;
 
-  let canvasStream = null;
-  let sourceStream = null;
-  let outputStream = null;
-  let context = null;
-  let chunks = [];
-  let finished = false;
-  let originalTime = video.currentTime;
+  makeClip.disabled = true;
+  stopClip.disabled = false;
+  exportRunning = true;
+
+  setStatus("Preparing your vertical clip...");
 
   try {
-    if (!video.videoWidth || !video.videoHeight) {
-      throw new Error("Wait for the video preview to finish loading.");
+    await seekTo(start);
+
+    sourceVideo.muted = false;
+
+    const captureVideo =
+      sourceVideo.captureStream ||
+      sourceVideo.mozCaptureStream;
+
+    if (typeof captureVideo === "function") {
+      audioStream = captureVideo.call(sourceVideo);
     }
-
-    if (typeof video.captureStream !== "function" &&
-        typeof video.mozCaptureStream !== "function") {
-      throw new Error(
-        "This browser cannot capture the video's audio. Try an updated desktop Chrome browser."
-      );
-    }
-
-    setExportStatus("Preparing your vertical video...");
-
-    const width = resolution;
-    const height = Math.round(resolution * 16 / 9);
-
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    context = canvas.getContext("2d");
-
-    if (!context) {
-      throw new Error("Could not initialize the video canvas.");
-    }
-
-    video.currentTime = start;
-    await waitForSeek();
 
     canvasStream = canvas.captureStream(30);
 
-    const capture = video.captureStream || video.mozCaptureStream;
-    sourceStream = capture.call(video);
+    const tracks = [...canvasStream.getVideoTracks()];
 
-    outputStream = new MediaStream([
-      ...canvasStream.getVideoTracks(),
-      ...sourceStream.getAudioTracks()
-    ]);
-
-    if (!outputStream.getVideoTracks().length) {
-      throw new Error("Could not create the output video stream.");
+    if (audioStream) {
+      audioStream.getAudioTracks().forEach((track) => {
+        tracks.push(track);
+      });
     }
 
-    const mimeType = getRecorderType();
-    recorder = new MediaRecorder(
-      outputStream,
-      mimeType ? { mimeType } : undefined
-    );
+    const combinedStream = new MediaStream(tracks);
+    const mimeType = getSupportedMimeType();
 
-    chunks = [];
+    if (!mimeType) {
+      throw new Error(
+        "This browser cannot record WebM video. Try a recent desktop Chrome or Edge browser."
+      );
+    }
 
-    const recordingFinished = new Promise((resolve, reject) => {
-      recorder.addEventListener("dataavailable", event => {
-        if (event.data && event.data.size > 0) {
-          chunks.push(event.data);
-        }
-      });
-
-      recorder.addEventListener("stop", () => {
-        finished = true;
-        resolve();
-      }, { once: true });
-
-      recorder.addEventListener("error", event => {
-        reject(event.error || new Error("Recording failed."));
-      }, { once: true });
+    recorder = new MediaRecorder(combinedStream, {
+      mimeType
     });
 
-    recorder.start(1000);
+    recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        recordingChunks.push(event.data);
+      }
+    };
 
-    drawVerticalFrame(context, canvas);
+    recorder.onerror = () => {
+      setStatus("An error occurred while recording the clip.");
+      if (recorder && recorder.state !== "inactive") {
+        recorder.stop();
+      }
+    };
 
-    const renderFrame = () => {
-      if (cancelExport || !exporting) return;
+    recorder.onstop = () => {
+      finishExport();
 
-      drawVerticalFrame(context, canvas);
-
-      const elapsed = video.currentTime - start;
-      progress.value = Math.min(
-        100,
-        Math.max(0, elapsed / duration * 100)
-      );
-
-      setExportStatus(
-        `Creating clip: ${Math.min(duration, Math.max(0, elapsed)).toFixed(1)} / ${duration} seconds`
-      );
-
-      if (elapsed >= duration || video.ended) {
-        if (recorder && recorder.state !== "inactive") {
-          recorder.stop();
-        }
+      if (recordingChunks.length === 0) {
+        setStatus("No video data was recorded. Please try again.");
         return;
       }
 
-      animationId = requestAnimationFrame(renderFrame);
+      const blob = new Blob(recordingChunks, {
+        type: mimeType
+      });
+
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      link.href = url;
+      link.download = "clipmaker-vertical-clip.webm";
+      link.textContent = "⬇ Download your vertical clip";
+      link.style.display = "inline-block";
+      link.style.marginTop = "16px";
+      link.style.fontWeight = "bold";
+
+      downloadArea.replaceChildren(link);
+
+      setStatus(
+        stopRequested
+          ? "Export stopped. Download the recorded portion below."
+          : "Clip created! Use the download link below."
+      );
+
+      progress.value = stopRequested
+        ? progress.value
+        : 100;
+
+      exportFinished = true;
     };
 
-    await video.play();
-    await waitUntilPlaying();
+    exportStartedAt = start;
+    drawFrame();
 
-    animationId = requestAnimationFrame(renderFrame);
+    recorder.start(250);
 
-    // A fallback ensures recording stops even if animation frames pause.
-    await new Promise(resolve => {
-      const check = () => {
-        if (cancelExport || !exporting ||
-            video.currentTime >= start + duration ||
-            video.ended || recorder?.state === "inactive") {
-          if (recorder && recorder.state !== "inactive") {
-            recorder.stop();
-          }
-          resolve();
-          return;
+    await sourceVideo.play();
+
+    setStatus(
+      "Creating clip... Keep this page open until recording finishes."
+    );
+
+    const endTime = start + exportDuration;
+
+    const checkPlayback = () => {
+      if (!exportRunning || !recorder) {
+        return;
+      }
+
+      if (
+        sourceVideo.currentTime >= endTime ||
+        sourceVideo.ended
+      ) {
+        sourceVideo.pause();
+
+        if (recorder.state !== "inactive") {
+          recorder.stop();
         }
-        setTimeout(check, 200);
-      };
-      check();
-    });
+      } else {
+        requestAnimationFrame(checkPlayback);
+      }
+    };
+
+    checkPlayback();
+  } catch (error) {
+    console.error(error);
 
     if (recorder && recorder.state !== "inactive") {
       recorder.stop();
+    } else {
+      finishExport();
     }
 
-    await recordingFinished;
-
-    if (cancelExport) {
-      setExportStatus("Export cancelled.");
-      return;
-    }
-
-    if (!chunks.length) {
-      throw new Error("No video data was produced. Try another video.");
-    }
-
-    const outputType = recorder.mimeType || "video/webm";
-    const blob = new Blob(chunks, { type: outputType });
-    const downloadURL = URL.createObjectURL(blob);
-
-    const link = document.createElement("a");
-    link.href = downloadURL;
-    link.download = "my-vertical-clip.webm";
-    link.textContent = "⬇ Download your vertical clip";
-    link.style.fontWeight = "bold";
-
-    downloadArea.replaceChildren(link);
-    progress.value = 100;
-    setExportStatus(
-      `Clip created successfully! File size: ${(blob.size / (1024 * 1024)).toFixed(2)} MB.`
+    setStatus(
+      "Export failed: " +
+      (error && error.message
+        ? error.message
+        : "Unknown error. Try a different video or browser.")
     );
-  } catch (error) {
-    if (recorder && recorder.state !== "inactive") {
-      try { recorder.stop(); } catch {}
-    }
-    setExportStatus(`Export error: ${error.message}`);
-  } finally {
-    if (animationId !== null) {
-      cancelAnimationFrame(animationId);
-      animationId = null;
-    }
+  }
+});
 
-    video.pause();
+stopClip.addEventListener("click", () => {
+  if (!exportRunning) {
+    return;
+  }
+
+  stopRequested = true;
+  setStatus("Stopping export...");
+
+  if (recorder && recorder.state !== "inactive") {
+    recorder.stop();
+  } else {
+    finishExport();
+  }
+});
+
+window.addEventListener("beforeunload", () => {
+  if (localVideoUrl) {
+    URL.revokeObjectURL(localVideoUrl);
+  }
+});use();
 
     try {
       if (Number.isFinite(originalTime)) {
