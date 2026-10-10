@@ -1,268 +1,417 @@
 
-import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile, toBlobURL } from "@ffmpeg/util";
+const videoInput = document.getElementById("videoFile");
+const video = document.getElementById("video");
+const status = document.getElementById("status");
+const startInput = document.getElementById("startTime");
+const durationInput = document.getElementById("duration");
+const qualityInput = document.getElementById("quality");
+const exportBtn = document.getElementById("exportBtn");
+const stopBtn = document.getElementById("stopBtn");
+const progress = document.getElementById("progress");
+const exportStatus = document.getElementById("exportStatus");
+const downloadArea = document.getElementById("downloadArea");
 
-const $ = (selector) => document.querySelector(selector);
+let currentURL = null;
+let cancelExport = false;
+let exporting = false;
+let recorder = null;
+let animationId = null;
 
-const videoInput = $("#video");
-const startButton = $("#start");
-const statusBox = $("#status");
-const outputLink = $("#output");
-
-if (!videoInput || !startButton || !statusBox || !outputLink) {
-  throw new Error(
-    "ShortsMaker setup error: check #video, #start, #status and #output in index.html."
-  );
+function setStatus(message) {
+  status.textContent = message;
 }
 
-let ffmpeg = null;
-let loadPromise = null;
-let selectedFile = null;
-let outputURL = null;
-let isProcessing = false;
-
-// Build the advanced controls.
-const controls = document.createElement("section");
-controls.style.cssText = `
-  display:grid;
-  grid-template-columns:repeat(2,minmax(0,1fr));
-  gap:12px;
-  margin-top:16px;
-`;
-
-controls.innerHTML = `
-  <label style="display:block;font-size:14px">
-    Clip duration
-    <select id="clip-duration" style="
-      display:block;width:100%;margin-top:7px;padding:12px;
-      border-radius:10px;background:#101829;color:white">
-      <option value="30">30 seconds</option>
-      <option value="45">45 seconds</option>
-      <option value="60" selected>60 seconds</option>
-    </select>
-  </label>
-  <label style="display:block;font-size:14px">
-    Video framing
-    <select id="framing" style="
-      display:block;width:100%;margin-top:7px;padding:12px;
-      border-radius:10px;background:#101829;color:white">
-      <option value="crop">Fill screen (crop sides)</option>
-      <option value="fit">Show entire video</option>
-    </select>
-  </label>
-`;
-
-startButton.parentNode.insertBefore(controls, startButton);
-
-const durationSelect = $("#clip-duration");
-const framingSelect = $("#framing");
-
-const progress = document.createElement("progress");
-progress.max = 100;
-progress.value = 0;
-progress.style.cssText = `
-  display:block;width:100%;height:12px;margin-top:14px;
-`;
-progress.setAttribute("aria-label", "Video processing progress");
-statusBox.insertAdjacentElement("afterend", progress);
-
-function showStatus(message) {
-  statusBox.textContent = message;
+function setExportStatus(message) {
+  exportStatus.textContent = message;
 }
 
-function clearDownload() {
-  outputLink.hidden = true;
-  outputLink.removeAttribute("href");
+function waitForEvent(element, eventName) {
+  return new Promise((resolve, reject) => {
+    const onEvent = () => {
+      cleanup();
+      resolve();
+    };
 
-  if (outputURL) {
-    URL.revokeObjectURL(outputURL);
-    outputURL = null;
+    const onError = () => {
+      cleanup();
+      reject(new Error("The video could not be loaded or decoded."));
+    };
+
+    const cleanup = () => {
+      element.removeEventListener(eventName, onEvent);
+      element.removeEventListener("error", onError);
+    };
+
+    element.addEventListener(eventName, onEvent, { once: true });
+    element.addEventListener("error", onError, { once: true });
+  });
+}
+
+videoInput.addEventListener("change", async () => {
+  const file = videoInput.files?.[0];
+
+  if (!file) {
+    setStatus("No video selected.");
+    return;
   }
-}
 
-function setBusy(busy) {
-  isProcessing = busy;
-  startButton.disabled = busy;
-  videoInput.disabled = busy;
-  durationSelect.disabled = busy;
-  framingSelect.disabled = busy;
-  startButton.textContent = busy ? "Processing…" : "▶ Create Short";
-}
+  if (!file.type.startsWith("video/")) {
+    setStatus("Please select a valid video file.");
+    return;
+  }
 
-// Detect video selection.
-videoInput.addEventListener("change", function () {
-  selectedFile = this.files && this.files.length > 0
-    ? this.files[0]
-    : null;
+  if (currentURL) {
+    URL.revokeObjectURL(currentURL);
+  }
 
-  clearDownload();
+  currentURL = URL.createObjectURL(file);
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+
+  setStatus(`Selected: ${file.name}. Loading preview...`);
+  exportBtn.disabled = true;
+  downloadArea.replaceChildren();
   progress.value = 0;
 
-  if (!selectedFile) {
-    showStatus("No video selected. Choose a video to begin.");
-    return;
-  }
-
-  showStatus("Selected: " + selectedFile.name);
-});
-
-  if (!selectedFile.type.startsWith("video/")) {
-    selectedFile = null;
-    showStatus("Please choose a supported video file.");
-    return;
-  }
-
-  showStatus(
-    `Selected: ${selectedFile.name} ` +
-    `(${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB)`
-  );
-};
-
-// Load FFmpeg once.
-async function loadEngine() {
-  if (ffmpeg) return ffmpeg;
-  if (loadPromise) return loadPromise;
-
-  loadPromise = (async () => {
-    showStatus("Loading video engine…");
-
-    const engine = new FFmpeg();
-
-    engine.on("log", ({ message }) => {
-      console.debug("[ShortsMaker]", message);
-    });
-
-    engine.on("progress", ({ progress: amount }) => {
-      if (Number.isFinite(amount)) {
-        const percent = Math.max(
-          0,
-          Math.min(99, Math.round(amount * 100))
-        );
-
-        progress.value = percent;
-        showStatus(`Processing video… ${percent}%`);
-      }
-    });
-
-    const base = `${import.meta.env.BASE_URL}ffmpeg/`;
-
-    await engine.load({
-      coreURL: await toBlobURL(
-        `${base}ffmpeg-core.js`,
-        "text/javascript"
-      ),
-      wasmURL: await toBlobURL(
-        `${base}ffmpeg-core.wasm`,
-        "application/wasm"
-      )
-    });
-
-    ffmpeg = engine;
-    return engine;
-  })();
-
   try {
-    return await loadPromise;
-  } catch (error) {
-    loadPromise = null;
-    throw error;
-  }
-}
+    const loaded = waitForEvent(video, "loadedmetadata");
+    video.src = currentURL;
+    video.load();
+    await loaded;
 
-// Create the vertical MP4.
-startButton.onclick = async function () {
-  if (isProcessing) return;
-
-  if (!selectedFile) {
-    showStatus("Please choose a video file first.");
-    return;
-  }
-
-  clearDownload();
-  progress.value = 0;
-  setBusy(true);
-
-  let inputName = "input-video";
-  const outputName = "shortsmaker-output.mp4";
-
-  try {
-    const engine = await loadEngine();
-
-    showStatus("Preparing your video…");
-
-    try {
-      await engine.deleteFile(inputName);
-    } catch {}
-
-    try {
-      await engine.deleteFile(outputName);
-    } catch {}
-
-    await engine.writeFile(inputName, await fetchFile(selectedFile));
-
-    const duration = durationSelect.value;
-
-    const videoFilter = framingSelect.value === "fit"
-      ? "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black"
-      : "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280";
-
-    showStatus("Creating your vertical MP4…");
-
-    const exitCode = await engine.exec([
-      "-i", inputName,
-      "-t", duration,
-      "-map", "0:v:0",
-      "-map", "0:a:0?",
-      "-vf", videoFilter,
-      "-r", "30",
-      "-c:v", "libx264",
-      "-preset", "ultrafast",
-      "-crf", "23",
-      "-pix_fmt", "yuv420p",
-      "-c:a", "aac",
-      "-b:a", "128k",
-      "-movflags", "+faststart",
-      outputName
-    ]);
-
-    if (exitCode !== 0) {
-      throw new Error(`FFmpeg exited with code ${exitCode}.`);
+    if (!Number.isFinite(video.duration) || video.duration <= 0) {
+      throw new Error("The video duration could not be detected.");
     }
 
-    const data = await engine.readFile(outputName);
+    startInput.max = Math.max(0, video.duration - 0.1);
+    startInput.value = "0";
 
-    outputURL = URL.createObjectURL(
-      new Blob([data], { type: "video/mp4" })
+    setStatus(
+      `Video ready: ${file.name} | Duration: ${video.duration.toFixed(1)} seconds`
     );
-
-    outputLink.href = outputURL;
-    outputLink.download = "shortsmaker.mp4";
-    outputLink.textContent = "⬇ Download your Short";
-    outputLink.hidden = false;
-
-    progress.value = 100;
-    showStatus("Finished! Your vertical video is ready.");
-
-    try {
-      await engine.deleteFile(inputName);
-    } catch {}
-
-    try {
-      await engine.deleteFile(outputName);
-    } catch {}
+    exportBtn.disabled = false;
+    setExportStatus("Your video is ready to edit.");
   } catch (error) {
-    console.error("[ShortsMaker]", error);
-    progress.value = 0;
-
-    showStatus(
-      `Could not create the video: ${error.message || String(error)}. ` +
-      "Check your internet connection and try a smaller video."
-    );
-  } finally {
-    setBusy(false);
+    setStatus(`Error: ${error.message}`);
+    exportBtn.disabled = true;
   }
-};
+});
 
-showStatus("Ready. Choose a video to begin.");
-progress.value = 0;
-startButton.textContent = "▶ Create Short";
+function waitForSeek() {
+  if (video.seeking) {
+    return waitForEvent(video, "seeked");
+  }
+
+  return Promise.resolve();
+}
+
+function getRecorderType() {
+  const types = [
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm"
+  ];
+
+  return types.find(type => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+function drawVerticalFrame(ctx, canvas) {
+  const sourceWidth = video.videoWidth;
+  const sourceHeight = video.videoHeight;
+
+  if (!sourceWidth || !sourceHeight) return;
+
+  // Fill a 9:16 canvas without stretching the source video.
+  const scale = Math.max(
+    canvas.width / sourceWidth,
+    canvas.height / sourceHeight
+  );
+
+  const width = sourceWidth * scale;
+  const height = sourceHeight * scale;
+  const x = (canvas.width - width) / 2;
+  const y = (canvas.height - height) / 2;
+
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(video, x, y, width, height);
+}
+
+function waitUntilPlaying() {
+  if (!video.paused) return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    const onPlaying = () => {
+      cleanup();
+      resolve();
+    };
+
+    const onError = () => {
+      cleanup();
+      reject(new Error("The video could not start playing."));
+    };
+
+    const cleanup = () => {
+      video.removeEventListener("playing", onPlaying);
+      video.removeEventListener("error", onError);
+    };
+
+    video.addEventListener("playing", onPlaying, { once: true });
+    video.addEventListener("error", onError, { once: true });
+  });
+}
+
+function stopTracks(stream) {
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+  }
+}
+
+async function createClip() {
+  if (exporting) return;
+
+  if (!video.src || !Number.isFinite(video.duration)) {
+    setExportStatus("Choose a video first.");
+    return;
+  }
+
+  if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) {
+    setExportStatus(
+      "Your browser does not support video export. Try the latest Chrome browser."
+    );
+    return;
+  }
+
+  const start = Number(startInput.value);
+  const duration = Number(durationInput.value);
+  const resolution = Number(qualityInput.value);
+
+  if (
+    !Number.isFinite(start) ||
+    start < 0 ||
+    !Number.isFinite(duration) ||
+    ![30, 45, 60].includes(duration) ||
+    start + duration > video.duration
+  ) {
+    setExportStatus(
+      `Invalid selection. Choose a start time between 0 and ${Math.max(
+        0,
+        video.duration - duration
+      ).toFixed(1)} seconds. The full clip must fit inside your video.`
+    );
+    return;
+  }
+
+  exporting = true;
+  cancelExport = false;
+  exportBtn.disabled = true;
+  stopBtn.disabled = false;
+  video.pause();
+  downloadArea.replaceChildren();
+  progress.value = 0;
+
+  let canvasStream = null;
+  let sourceStream = null;
+  let outputStream = null;
+  let context = null;
+  let chunks = [];
+  let finished = false;
+  let originalTime = video.currentTime;
+
+  try {
+    if (!video.videoWidth || !video.videoHeight) {
+      throw new Error("Wait for the video preview to finish loading.");
+    }
+
+    if (typeof video.captureStream !== "function" &&
+        typeof video.mozCaptureStream !== "function") {
+      throw new Error(
+        "This browser cannot capture the video's audio. Try an updated desktop Chrome browser."
+      );
+    }
+
+    setExportStatus("Preparing your vertical video...");
+
+    const width = resolution;
+    const height = Math.round(resolution * 16 / 9);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    context = canvas.getContext("2d");
+
+    if (!context) {
+      throw new Error("Could not initialize the video canvas.");
+    }
+
+    video.currentTime = start;
+    await waitForSeek();
+
+    canvasStream = canvas.captureStream(30);
+
+    const capture = video.captureStream || video.mozCaptureStream;
+    sourceStream = capture.call(video);
+
+    outputStream = new MediaStream([
+      ...canvasStream.getVideoTracks(),
+      ...sourceStream.getAudioTracks()
+    ]);
+
+    if (!outputStream.getVideoTracks().length) {
+      throw new Error("Could not create the output video stream.");
+    }
+
+    const mimeType = getRecorderType();
+    recorder = new MediaRecorder(
+      outputStream,
+      mimeType ? { mimeType } : undefined
+    );
+
+    chunks = [];
+
+    const recordingFinished = new Promise((resolve, reject) => {
+      recorder.addEventListener("dataavailable", event => {
+        if (event.data && event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      });
+
+      recorder.addEventListener("stop", () => {
+        finished = true;
+        resolve();
+      }, { once: true });
+
+      recorder.addEventListener("error", event => {
+        reject(event.error || new Error("Recording failed."));
+      }, { once: true });
+    });
+
+    recorder.start(1000);
+
+    drawVerticalFrame(context, canvas);
+
+    const renderFrame = () => {
+      if (cancelExport || !exporting) return;
+
+      drawVerticalFrame(context, canvas);
+
+      const elapsed = video.currentTime - start;
+      progress.value = Math.min(
+        100,
+        Math.max(0, elapsed / duration * 100)
+      );
+
+      setExportStatus(
+        `Creating clip: ${Math.min(duration, Math.max(0, elapsed)).toFixed(1)} / ${duration} seconds`
+      );
+
+      if (elapsed >= duration || video.ended) {
+        if (recorder && recorder.state !== "inactive") {
+          recorder.stop();
+        }
+        return;
+      }
+
+      animationId = requestAnimationFrame(renderFrame);
+    };
+
+    await video.play();
+    await waitUntilPlaying();
+
+    animationId = requestAnimationFrame(renderFrame);
+
+    // A fallback ensures recording stops even if animation frames pause.
+    await new Promise(resolve => {
+      const check = () => {
+        if (cancelExport || !exporting ||
+            video.currentTime >= start + duration ||
+            video.ended || recorder?.state === "inactive") {
+          if (recorder && recorder.state !== "inactive") {
+            recorder.stop();
+          }
+          resolve();
+          return;
+        }
+        setTimeout(check, 200);
+      };
+      check();
+    });
+
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+    }
+
+    await recordingFinished;
+
+    if (cancelExport) {
+      setExportStatus("Export cancelled.");
+      return;
+    }
+
+    if (!chunks.length) {
+      throw new Error("No video data was produced. Try another video.");
+    }
+
+    const outputType = recorder.mimeType || "video/webm";
+    const blob = new Blob(chunks, { type: outputType });
+    const downloadURL = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = downloadURL;
+    link.download = "my-vertical-clip.webm";
+    link.textContent = "⬇ Download your vertical clip";
+    link.style.fontWeight = "bold";
+
+    downloadArea.replaceChildren(link);
+    progress.value = 100;
+    setExportStatus(
+      `Clip created successfully! File size: ${(blob.size / (1024 * 1024)).toFixed(2)} MB.`
+    );
+  } catch (error) {
+    if (recorder && recorder.state !== "inactive") {
+      try { recorder.stop(); } catch {}
+    }
+    setExportStatus(`Export error: ${error.message}`);
+  } finally {
+    if (animationId !== null) {
+      cancelAnimationFrame(animationId);
+      animationId = null;
+    }
+
+    video.pause();
+
+    try {
+      if (Number.isFinite(originalTime)) {
+        video.currentTime = Math.min(originalTime, video.duration);
+      }
+    } catch {}
+
+    stopTracks(canvasStream);
+    stopTracks(sourceStream);
+    stopTracks(outputStream);
+
+    recorder = null;
+    exporting = false;
+    exportBtn.disabled = !video.src;
+    stopBtn.disabled = true;
+  }
+}
+
+exportBtn.addEventListener("click", createClip);
+
+stopBtn.addEventListener("click", () => {
+  cancelExport = true;
+
+  if (animationId !== null) {
+    cancelAnimationFrame(animationId);
+    animationId = null;
+  }
+
+  if (recorder && recorder.state !== "inactive") {
+    recorder.stop();
+  }
+
+  video.pause();
+  setExportStatus("Cancelling export...");
+});
