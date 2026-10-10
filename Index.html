@@ -1,0 +1,125 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShortsMaker</title>
+<style>
+body {
+  margin: 0;
+  padding: 20px;
+  background: #101827;
+  color: white;
+  font-family: Arial, sans-serif;
+}
+.app {
+  max-width: 480px;
+  margin: auto;
+}
+h1 { color: #67e8f9; }
+p { color: #cbd5e1; }
+.panel {
+  background: #1e293b;
+  padding: 18px;
+  border-radius: 16px;
+  margin: 18px 0;
+}
+input, button {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 10px 0;
+  padding: 13px;
+  border-radius: 10px;
+}
+button {
+  background: #06b6d4;
+  border: none;
+  font-weight: bold;
+  font-size: 16px;
+}
+video {
+  width: 100%;
+  max-height: 360px;
+  background: black;
+  border-radius: 12px;
+}
+label { display: block; margin-top: 12px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>🎬 ShortsMaker</h1>
+  <p>Create vertical video shorts from your own videos.</p>
+
+  <div class="panel">
+    <h3>1. Choose your video</h3>
+    <input id="file" type="file" accept="video/*">
+    <video id="video" controls playsinline></video>
+    <p id="info">No video selected yet.</p>
+  </div>
+
+  <div class="panel">
+    <h3>2. Clip settings</h3>
+
+    <label>Start time (seconds)</label>
+    <input id="start" type="number" min="0" value="0">
+
+    <label>Clip length (seconds)</label>
+    <input id="length" type="number" min="30" max="60" value="30">
+
+    <button id="preview">Preview clip start</button>
+    <p id="status">Choose a video to begin.</p>
+  </div>
+
+  <p>Next: automatic highlight selection, captions,
+  face tracking and MP4 export.</p>
+</div>
+
+<script>
+const file = document.getElementById("file");
+const video = document.getElementById("video");
+const info = document.getElementById("info");
+const start = document.getElementById("start");
+const length = document.getElementById("length");
+const status = document.getElementById("status");
+let videoURL = null;
+
+file.addEventListener("change", () => {
+  if (!file.files || !file.files[0]) return;
+
+  if (videoURL) URL.revokeObjectURL(videoURL);
+  videoURL = URL.createObjectURL(file.files[0]);
+  video.src = videoURL;
+
+  video.onloadedmetadata = () => {
+    info.textContent =
+      "Duration: " + Math.floor(video.duration) + " seconds";
+    start.max = Math.max(0, video.duration - 30);
+  };
+  status.textContent = "Video loaded successfully!";
+});
+
+document.getElementById("preview").addEventListener("click", () => {
+  if (!videoURL || !Number.isFinite(video.duration)) {
+    status.textContent = "Please choose a video first.";
+    return;
+  }
+
+  const s = Number(start.value);
+  const d = Number(length.value);
+
+  if (!Number.isFinite(s) || !Number.isFinite(d) ||
+      s < 0 || d < 30 || d > 60 || s + d > video.duration) {
+    status.textContent =
+      "Choose a valid start time and a 30–60 second clip that fits your video.";
+    return;
+  }
+
+  video.currentTime = s;
+  video.play();
+  status.textContent =
+    "Preview started. This demo does not export a clipped video yet.";
+});
+</script>
+</body>
+</html>
