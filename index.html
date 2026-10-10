@@ -1,25 +1,323 @@
 
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ShortsMaker</title>
+  <meta name="theme-color" content="#090d18">
+  <meta name="description" content="ShortsMaker — create vertical videos for Shorts and Reels.">
+  <title>ShortsMaker — Video Studio</title>
+
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090d18;
+      --panel: #131b2d;
+      --panel2: #1b2740;
+      --text: #f4f7ff;
+      --muted: #9eabc4;
+      --accent: #8b5cf6;
+      --accent2: #22d3ee;
+      --border: #2b3852;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(ellipse at top, #20234c 0, var(--bg) 55%);
+      color: var(--text);
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+
+    button, input { font: inherit; }
+
+    .app {
+      width: min(100% - 28px, 760px);
+      margin: auto;
+      padding: 28px 0 44px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 30px;
+    }
+
+    .logo {
+      display: grid;
+      place-items: center;
+      width: 48px;
+      height: 48px;
+      border-radius: 15px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: white;
+      font-size: 25px;
+      font-weight: 900;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 25px;
+      letter-spacing: -0.8px;
+    }
+
+    .tagline {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .hero { margin-bottom: 24px; }
+
+    .eyebrow {
+      color: #b8a6ff;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      margin: 10px 0;
+      font-size: clamp(30px, 8vw, 46px);
+      line-height: 1.08;
+      letter-spacing: -1.5px;
+    }
+
+    .gradient {
+      background: linear-gradient(90deg, #c4b5fd, #67e8f9);
+      background-clip: text;
+      -webkit-background-clip: text;
+      color: transparent;
+    }
+
+    .description {
+      max-width: 530px;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 14px;
+    }
+
+    .card {
+      padding: 20px;
+      margin-top: 18px;
+      background: rgba(19, 27, 45, .94);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      box-shadow: 0 18px 60px #0003;
+    }
+
+    .card-title {
+      margin: 0 0 7px;
+      font-size: 18px;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .picker {
+      display: block;
+      margin-top: 18px;
+      padding: 16px;
+      border: 1px dashed #566582;
+      border-radius: 15px;
+      background: #0d1423;
+    }
+
+    input[type="file"] {
+      display: block;
+      width: 100%;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    input[type="file"]::file-selector-button {
+      margin-right: 10px;
+      padding: 10px 12px;
+      border: 0;
+      border-radius: 9px;
+      background: var(--panel2);
+      color: white;
+      cursor: pointer;
+    }
+
+    .settings {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .setting {
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      background: #101829;
+    }
+
+    .setting strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 14px;
+    }
+
+    .setting span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .primary {
+      width: 100%;
+      margin-top: 20px;
+      padding: 16px;
+      border: 0;
+      border-radius: 13px;
+      background: linear-gradient(100deg, var(--accent), #6266f1);
+      color: white;
+      font-size: 16px;
+      font-weight: 800;
+      cursor: pointer;
+      transition: opacity .2s;
+    }
+
+    .primary:disabled {
+      opacity: .55;
+      cursor: wait;
+    }
+
+    #status {
+      margin-top: 18px;
+      padding: 13px;
+      border-radius: 12px;
+      background: #0b1321;
+      color: #c7d2fe;
+      font-size: 13px;
+      line-height: 1.6;
+      overflow-wrap: anywhere;
+    }
+
+    #output {
+      display: block;
+      margin-top: 14px;
+      padding: 15px;
+      border-radius: 12px;
+      background: #123b36;
+      color: #99f6e4;
+      text-align: center;
+      font-weight: 800;
+      text-decoration: none;
+    }
+
+    #output[hidden] { display: none; }
+
+    .note {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    footer {
+      padding-top: 26px;
+      color: #75839e;
+      font-size: 12px;
+      text-align: center;
+    }
+
+    @media (max-width: 420px) {
+      .app { width: min(100% - 20px, 760px); }
+      .card { padding: 16px; }
+      .settings { gap: 8px; }
+      .setting { padding: 11px; }
+    }
+  </style>
 </head>
+
 <body>
-  <h1>🎬 ShortsMaker</h1>
-  <p>Turn a video into a vertical clip up to 60 seconds long.</p>
+  <main class="app">
+    <header>
+      <div class="logo" aria-hidden="true">S</div>
+      <div>
+        <h1>ShortsMaker</h1>
+        <p class="tagline">Your videos. Your creativity.</p>
+      </div>
+    </header>
 
-  <label for="video">Choose a video</label>
-  <input id="video" type="file" accept="video/*">
+    <section class="hero">
+      <div class="eyebrow">Mobile Video Studio</div>
+      <h2>Make every video<br><span class="gradient">short and vertical.</span></h2>
+      <p class="description">
+        Turn a video from your device into a vertical clip for Shorts
+        and Reels. Video processing is intended to run in your browser.
+      </p>
+    </section>
 
-  <p>
-    <button <button id="start" onclick="document.getElementById('status').textContent='Button works!'">Create Short</button>>Create Short</button>
-  </p>
+    <section class="card">
+      <h3 class="card-title">Create your Short</h3>
+      <p class="hint">
+        Choose a video from your phone. The default processing settings
+        create a clip up to 60 seconds long in 9:16 format.
+      </p>
 
-  <p id="status">Choose a video to begin.</p>
-  <a id="output" hidden>Download your vertical video</a>
+      <div class="picker">
+        <label for="video"><strong>Choose your video file</strong></label>
+        <input
+          id="video"
+          type="file"
+          accept="video/*"
+        >
+      </div>
 
-  <script type="module" src="/src/main.js"></script>
+      <div class="settings">
+        <div class="setting">
+          <strong>9:16 Vertical</strong>
+          <span>Portrait video format</span>
+        </div>
+        <div class="setting">
+          <strong>Up to 60 seconds</strong>
+          <span>Short-form clip</span>
+        </div>
+        <div class="setting">
+          <strong>720 × 1280</strong>
+          <span>Target resolution</span>
+        </div>
+        <div class="setting">
+          <strong>MP4</strong>
+          <span>Download format</span>
+        </div>
+      </div>
+
+      <button id="start" class="primary" type="button">
+        ▶ Create Short
+      </button>
+
+      <div id="status" role="status" aria-live="polite">
+        Ready. Choose a video to begin.
+      </div>
+
+      <a id="output" href="#" hidden>
+        Download your vertical video
+      </a>
+
+      <p class="note">
+        Keep this page open while processing. Large videos may take
+        time and use substantial memory on a phone.
+      </p>
+    </section>
+
+    <footer>
+      ShortsMaker · Made for creators
+    </footer>
+  </main>
+
+  <script type="module" src="./src/main.js"></script>
 </body>
 </html>
