@@ -6,6 +6,8 @@ const $ = (selector) => document.querySelector(selector);
 
 const videoInput = $("#video");
 const startButton = $("#start");
+console.log("ShortsMaker main.js is running");
+alert("ShortsMaker main.js is running!");
 const statusBox = $("#status");
 const outputLink = $("#output");
 
