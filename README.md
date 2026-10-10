@@ -1,1 +1,1 @@
-# ShortsMaker
+ClipMaker-Studio
