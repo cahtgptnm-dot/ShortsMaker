@@ -90,8 +90,8 @@ function setBusy(busy) {
 }
 
 // Detect video selection.
-videoInput.onchange = function () {
-  selectedFile = this.files && this.files[0]
+videoInput.addEventListener("change", function () {
+  selectedFile = this.files && this.files.length > 0
     ? this.files[0]
     : null;
 
@@ -102,6 +102,9 @@ videoInput.onchange = function () {
     showStatus("No video selected. Choose a video to begin.");
     return;
   }
+
+  showStatus("Selected: " + selectedFile.name);
+});
 
   if (!selectedFile.type.startsWith("video/")) {
     selectedFile = null;
