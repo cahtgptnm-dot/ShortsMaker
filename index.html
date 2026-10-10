@@ -1,102 +1,251 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ShortsMaker</title>
 <style>
+* { box-sizing: border-box; }
 body {
-  margin: 0;
-  padding: 20px;
-  background: #101827;
-  color: white;
+  margin: 0; padding: 18px;
+  background: #101827; color: white;
   font-family: Arial, sans-serif;
 }
-.app {
-  max-width: 480px;
-  margin: auto;
-}
+.app { max-width: 480px; margin: auto; }
 h1 { color: #67e8f9; }
-p { color: #cbd5e1; }
+p { color: #cbd5e1; line-height: 1.5; }
 .panel {
-  background: #1e293b;
-  padding: 18px;
-  border-radius: 16px;
-  margin: 18px 0;
+  background: #1e293b; padding: 16px;
+  border-radius: 16px; margin: 16px 0;
 }
-input, button {
-  width: 100%;
-  box-sizing: border-box;
-  margin: 10px 0;
-  padding: 13px;
-  border-radius: 10px;
-}
-button {
-  background: #06b6d4;
-  border: none;
-  font-weight: bold;
+input, button, a.download {
+  display: block; width: 100%; padding: 13px;
+  margin: 10px 0; border-radius: 10px;
   font-size: 16px;
 }
-video {
-  width: 100%;
-  max-height: 360px;
-  background: black;
-  border-radius: 12px;
+input { background: #fff; color: #111827; }
+button, a.download {
+  background: #06b6d4; color: #082f49;
+  border: none; font-weight: bold;
+  text-align: center; text-decoration: none;
 }
+button:disabled { opacity: .5; }
+video { width: 100%; background: black; border-radius: 12px; }
 label { display: block; margin-top: 12px; }
+.small { font-size: 13px; }
+#status { overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
 <div class="app">
   <h1>🎬 ShortsMaker</h1>
-  <p>Create vertical video shorts from your own videos.</p>
+  <p>Trim your video, crop it to vertical 9:16, and export an MP4.</p>
 
   <div class="panel">
-    <h3>1. Choose your video</h3>
+    <h3>1. Choose a video</h3>
     <input id="file" type="file" accept="video/*">
     <video id="video" controls playsinline></video>
-    <p id="info">No video selected yet.</p>
+    <p id="info">No video selected.</p>
   </div>
 
   <div class="panel">
-    <h3>2. Clip settings</h3>
+    <h3>2. Choose your clip</h3>
 
-    <label>Start time (seconds)</label>
-    <input id="start" type="number" min="0" value="0">
+    <label for="start">Start time (seconds)</label>
+    <input id="start" type="number" min="0" step="1" value="0">
 
-    <label>Clip length (seconds)</label>
-    <input id="length" type="number" min="30" max="60" value="30">
+    <label for="length">Clip length (30–60 seconds)</label>
+    <input id="length" type="number" min="30" max="60" step="1" value="30">
 
-    <button id="preview">Preview clip start</button>
-    <p id="status">Choose a video to begin.</p>
+    <p class="small">Vertical crop: 720 × 1280. The centre of the video stays in frame.</p>
   </div>
 
-  <p>Next: automatic highlight selection, captions,
-  face tracking and MP4 export.</p>
+  <div class="panel">
+    <h3>3. Export MP4</h3>
+    <button id="load">Load video engine (first time only)</button>
+    <button id="export" disabled>Create MP4 clip</button>
+    <p id="status">Choose a video to begin.</p>
+    <a id="download" class="download" hidden>Download MP4</a>
+  </div>
+
+  <p class="small">Video processing runs on your device. The engine is downloaded from a CDN. Large videos may be slow or exceed your phone's available memory.</p>
 </div>
 
-<script>
-const file = document.getElementById("file");
+<script type="module">
+import { FFmpeg } from
+  "https://esm.sh/@ffmpeg/ffmpeg@0.12.10?bundle";
+import { fetchFile, toBlobURL } from
+  "https://esm.sh/@ffmpeg/util@0.12.1?bundle";
+
+const fileInput = document.getElementById("file");
 const video = document.getElementById("video");
 const info = document.getElementById("info");
-const start = document.getElementById("start");
-const length = document.getElementById("length");
+const startInput = document.getElementById("start");
+const lengthInput = document.getElementById("length");
+const loadButton = document.getElementById("load");
+const exportButton = document.getElementById("export");
 const status = document.getElementById("status");
-let videoURL = null;
+const download = document.getElementById("download");
 
-file.addEventListener("change", () => {
-  if (!file.files || !file.files[0]) return;
+const ffmpeg = new FFmpeg();
+let selectedFile = null;
+let videoURL = null;
+let outputURL = null;
+let engineReady = false;
+let busy = false;
+
+function message(text) {
+  status.textContent = text;
+}
+
+ffmpeg.on("log", ({ message: logMessage }) => {
+  if (busy && logMessage) {
+    status.textContent = logMessage.slice(-240);
+  }
+});
+
+ffmpeg.on("progress", ({ progress }) => {
+  if (busy && Number.isFinite(progress)) {
+    status.textContent =
+      "Processing: " + Math.round(progress * 100) + "%";
+  }
+});
+
+fileInput.addEventListener("change", () => {
+  selectedFile = fileInput.files?.[0] || null;
+  if (!selectedFile) return;
 
   if (videoURL) URL.revokeObjectURL(videoURL);
-  videoURL = URL.createObjectURL(file.files[0]);
+  if (outputURL) URL.revokeObjectURL(outputURL);
+
+  videoURL = URL.createObjectURL(selectedFile);
   video.src = videoURL;
+  download.hidden = true;
+  download.removeAttribute("href");
 
   video.onloadedmetadata = () => {
     info.textContent =
-      "Duration: " + Math.floor(video.duration) + " seconds";
-    start.max = Math.max(0, video.duration - 30);
+      "Duration: " + video.duration.toFixed(1) +
+      " seconds | File: " + selectedFile.name;
+
+    startInput.max = Math.max(0, video.duration - 30);
+    message("Video ready. Choose a start time and clip length.");
   };
-  status.textContent = "Video loaded successfully!";
+
+  exportButton.disabled = !engineReady;
 });
+
+loadButton.addEventListener("click", async () => {
+  if (engineReady || busy) return;
+
+  busy = true;
+  loadButton.disabled = true;
+  message("Downloading the video engine. Keep this page open...");
+
+  try {
+    const base =
+      "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd";
+
+    await ffmpeg.load({
+      coreURL: await toBlobURL(
+        base + "/ffmpeg-core.js", "text/javascript"
+      ),
+      wasmURL: await toBlobURL(
+        base + "/ffmpeg-core.wasm", "application/wasm"
+      )
+    });
+
+    engineReady = true;
+    loadButton.textContent = "Video engine ready ✓";
+    exportButton.disabled = !selectedFile;
+    message("Engine ready. Select a video, then create your clip.");
+  } catch (error) {
+    console.error(error);
+    message("Engine failed to load. Check your internet connection and try again.");
+    loadButton.disabled = false;
+  } finally {
+    busy = false;
+  }
+});
+
+exportButton.addEventListener("click", async () => {
+  if (!selectedFile || !engineReady || busy) return;
+
+  const start = Number(startInput.value);
+  const length = Number(lengthInput.value);
+  const duration = video.duration;
+
+  if (!Number.isFinite(start) || start < 0 ||
+      !Number.isFinite(length) || length < 30 || length > 60 ||
+      !Number.isFinite(duration) || start + length > duration) {
+    message("Choose a valid start time and a 30–60 second clip that fits the video.");
+    return;
+  }
+
+  busy = true;
+  exportButton.disabled = true;
+  loadButton.disabled = true;
+  download.hidden = true;
+
+  let inputName = "input_video";
+  let outputName = "shorts_output.mp4";
+
+  try {
+    const ext = selectedFile.name.split(".").pop()
+      .toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (ext) inputName += "." + ext;
+
+    message("Preparing video...");
+
+    await ffmpeg.writeFile(inputName, await fetchFile(selectedFile));
+
+    message("Processing your clip. Please keep this page open...");
+
+    await ffmpeg.exec([
+      "-ss", String(start),
+      "-i", inputName,
+      "-t", String(length),
+      "-map", "0:v:0",
+      "-map", "0:a?",
+      "-vf",
+      "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280",
+      "-c:v", "libx264",
+      "-preset", "ultrafast",
+      "-crf", "28",
+      "-pix_fmt", "yuv420p",
+      "-c:a", "aac",
+      "-b:a", "128k",
+      "-movflags", "+faststart",
+      "-threads", "1",
+      outputName
+    ]);
+
+    message("Preparing MP4 download...");
+
+    const data = await ffmpeg.readFile(outputName);
+    const blob = new Blob([data], { type: "video/mp4" });
+
+    if (outputURL) URL.revokeObjectURL(outputURL);
+    outputURL = URL.createObjectURL(blob);
+
+    download.href = outputURL;
+    download.download = "ShortsMaker.mp4";
+    download.textContent = "⬇ Download MP4";
+    download.hidden = false;
+
+    message("Finished! Tap Download MP4 to save your clip.");
+  } catch (error) {
+    console.error(error);
+    message("Export failed. Your phone or this browser may not support this conversion. Try a shorter or smaller video.");
+  } finally {
+    busy = false;
+    loadButton.disabled = false;
+    exportButton.disabled = !engineReady || !selectedFile;
+  }
+});
+</script>
+</body>
+</html>
 
 document.getElementById("preview").addEventListener("click", () => {
   if (!videoURL || !Number.isFinite(video.duration)) {
@@ -105,20 +254,4 @@ document.getElementById("preview").addEventListener("click", () => {
   }
 
   const s = Number(start.value);
-  const d = Number(length.value);
-
-  if (!Number.isFinite(s) || !Number.isFinite(d) ||
-      s < 0 || d < 30 || d > 60 || s + d > video.duration) {
-    status.textContent =
-      "Choose a valid start time and a 30–60 second clip that fits your video.";
-    return;
-  }
-
-  video.currentTime = s;
-  video.play();
-  status.textContent =
-    "Preview started. This demo does not export a clipped video yet.";
-});
-</script>
-</body>
-</html>
+  const d = Nu
